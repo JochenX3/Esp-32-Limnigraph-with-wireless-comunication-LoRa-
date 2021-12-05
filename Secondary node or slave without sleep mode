@@ -1,0 +1,150 @@
+  /*
+      int i1 = LoRaData.indexOf(',');
+      int i2 = LoRaData.indexOf(',', i1+1);
+        
+      node = LoRaData.substring(0, i1).toFloat();      
+      level = LoRaData.substring(i1 + 1, i2).toFloat(); 
+      temp = LoRaData.substring(i2 + 1).toFloat();
+  
+  */
+// Libraries for Temp sensor
+#include <OneWire.h>
+#include <DallasTemperature.h>
+
+//Libraries for LoRa
+#include <SPI.h>
+#include <LoRa.h>
+
+//Libraries for OLED Display
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+
+//.......................Pines usados por el modulo transceptor LoRa.....................
+#define SCK 5
+#define MISO 19
+#define MOSI 27
+#define SS 18
+#define RST 14
+#define DIO0 26
+
+//433E6 for Asia
+//866E6 for Europe
+//915E6 for North America
+#define BAND 915E6
+
+//....................Pines y Parametros por el Sensor Ultrasonico.......................
+
+const int trigPin = 12;
+const int echoPin = 13;
+#define SOUND_SPEED 0.034
+#define CM_TO_INCH 0.393701
+long duracion;
+float distanciaCm;
+float distanciaInch;
+
+//....................Pines y Parametros por el Sensor de Temperatura.......................
+
+const int oneWireBus = 4;
+OneWire oneWire(oneWireBus);
+float temperatureC;
+float temperatureF;
+DallasTemperature sensors(&oneWire);
+
+void setup() {
+  //initialize Serial Monitor
+  Serial.begin(115200);
+
+  sensors.begin();
+
+  pinMode(trigPin, OUTPUT);
+  pinMode(echoPin, INPUT);
+  
+  Serial.println("LoRa Sender Test");
+
+  //SPI LoRa pins
+  SPI.begin(SCK, MISO, MOSI, SS);
+  //setup LoRa transceiver module
+  LoRa.setPins(SS, RST, DIO0);
+  
+  if (!LoRa.begin(BAND)) {
+    Serial.println("Starting LoRa failed!");
+    while (1);
+  }
+  Serial.println("LoRa Initializing OK!");
+  delay(2000);
+}
+
+
+int node = 1; // You can change from 1 to 3 the number of the node to create the 3 secondary nodes
+String comma = ",";
+
+void loop() 
+{
+  String datos;
+  datos = recibirLoRa();
+  while(datos != "")
+    {
+      if(datos == "1")
+        {
+          MedirNivel();
+          MedirTemperatura();
+          float temp = temperatureC;
+          float level = distanciaCm;
+          Serial.println("Recibido: " + datos);
+          enviarLoRa(String(node)+comma+String(level)+comma+String(temp));
+          Serial.println("Respondiendo: "+String(node)+comma+String(level)+comma+String(temp));
+        }
+      datos = "";
+    }
+}
+
+void enviarLoRa(String Payload)
+{
+  LoRa.beginPacket();
+  LoRa.print(Payload);
+  LoRa.endPacket();
+}
+
+String recibirLoRa()
+{
+  int packetSize = LoRa.parsePacket();
+  String LoRaData;
+  
+  if (packetSize) 
+  {
+    while (LoRa.available()) 
+    {
+      LoRaData = LoRa.readString();
+      //Serial.println(LoRaData);     
+    }
+  }
+  return LoRaData;
+}
+
+void MedirNivel() {
+  digitalWrite(trigPin, LOW);
+  delayMicroseconds(20);
+  digitalWrite(trigPin, HIGH);
+  delayMicroseconds(20);
+  digitalWrite(trigPin, LOW);
+  duracion = pulseIn(echoPin, HIGH);
+  distanciaCm = duracion * SOUND_SPEED/2;
+  distanciaInch = distanciaCm * CM_TO_INCH;
+  Serial.print("Distancia (cm): ");
+  Serial.println(distanciaCm);
+  Serial.print("Distancia (inch): ");
+  Serial.println(distanciaInch);
+}
+
+void MedirTemperatura() {
+  sensors.requestTemperatures(); 
+  temperatureC = sensors.getTempCByIndex(0);
+  temperatureF = sensors.getTempFByIndex(0);
+  Serial.print("Temperatura en °C: ");
+  Serial.print(temperatureC);
+  Serial.println("ºC");
+  Serial.print("Temepratura en °F: ");
+  Serial.print(temperatureF);
+  Serial.println("ºF");
+}
