@@ -1,0 +1,266 @@
+
+#include <LoRa.h>
+#include <SPI.h>
+#include <WiFi.h>
+
+#include "Adafruit_MQTT.h"
+#include "Adafruit_MQTT_Client.h"
+
+#define WLAN_SSID       "" // Write wifi's name
+#define WLAN_PASS       "" // Write wifi's password
+
+#define AIO_SERVER      "io.adafruit.com"
+#define AIO_SERVERPORT  1883                   // use 8883 for SSL
+#define AIO_USERNAME    "" // Write adafruit.io's username, you can find the username in the key menu.
+#define AIO_KEY         "" // write adafruit.io's key, you can find the key in the key menu.
+
+#define SCK 5
+#define MISO 19
+#define MOSI 27
+#define SS 18
+#define RST 14
+#define DIO0 26 
+#define BAND 915E6
+
+WiFiClient client;
+Adafruit_MQTT_Client mqtt(&client, AIO_SERVER, AIO_SERVERPORT, AIO_USERNAME, AIO_KEY);
+
+//we are publishing 9 feeds, because there are 3 slave nodes that are sending 3 kinds of information to adafruit.io, level, temperature, and the state of the node (offline or online)
+
+Adafruit_MQTT_Publish nivel1 = Adafruit_MQTT_Publish(&mqtt, AIO_USERNAME "/feeds/nivel1"); 
+Adafruit_MQTT_Publish nivel2 = Adafruit_MQTT_Publish(&mqtt, AIO_USERNAME "/feeds/nivel2");
+Adafruit_MQTT_Publish nivel3 = Adafruit_MQTT_Publish(&mqtt, AIO_USERNAME "/feeds/nivel3");
+
+Adafruit_MQTT_Publish temperatura1 = Adafruit_MQTT_Publish(&mqtt, AIO_USERNAME "/feeds/temperatura1");
+Adafruit_MQTT_Publish temperatura2 = Adafruit_MQTT_Publish(&mqtt, AIO_USERNAME "/feeds/temperatura2");
+Adafruit_MQTT_Publish temperatura3 = Adafruit_MQTT_Publish(&mqtt, AIO_USERNAME "/feeds/temperatura3");
+
+Adafruit_MQTT_Publish estado1 = Adafruit_MQTT_Publish(&mqtt, AIO_USERNAME "/feeds/estado1");
+Adafruit_MQTT_Publish estado2 = Adafruit_MQTT_Publish(&mqtt, AIO_USERNAME "/feeds/estado2");
+Adafruit_MQTT_Publish estado3 = Adafruit_MQTT_Publish(&mqtt, AIO_USERNAME "/feeds/estado3");
+
+unsigned long millisActuales;
+unsigned long millisAnteriores;
+const long timeOut = 2000;
+const long sleepTime = 5000; // this code does not put the esp32 into sleep mode, just we called like that a variable that represents the time that the esp32 does not do anything.
+int estado = 0;
+
+void setup()
+{
+  Serial.begin(115200);
+  ////WIFI
+  WiFi.begin(WLAN_SSID, WLAN_PASS);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("WiFi connected");
+  Serial.println("IP address: "); Serial.println(WiFi.localIP());
+  
+  ////LoRa
+  SPI.begin(SCK, MISO, MOSI, SS);
+  LoRa.setPins(SS, RST, DIO0);
+
+  if (!LoRa.begin(BAND)) {
+    Serial.println("Starting LoRa failed!");
+    while (1);
+  }
+  Serial.println("LoRa OK!");
+}
+
+void loop()
+{
+    MQTT_connect();
+    millisActuales  = millis();
+    
+    switch(estado)
+      {
+       case 0:
+       {
+         Serial.println("Enviar al nodo 1");
+         enviarLoRa("1");
+         estado = 1;
+        }
+       break;
+        
+       case 1:
+       {
+           String loraData = recibirLoRa();
+           if(loraData != "")
+           {
+              publicarNube(loraData,nivel1,temperatura1,estado1);
+              estado = 2;      
+           }
+
+           if (Temporizador(millisAnteriores, timeOut))
+           {
+             Serial.println("No llego nada nodo 1");
+             publicarNubeAlarma(estado1);
+             estado = 2;
+           }          
+       }
+       break;
+
+       case 2:
+       {
+         Serial.println("Enviar al nodo 2");
+         enviarLoRa("2");
+         estado = 3;
+        }
+       break;
+        
+       case 3:
+       {
+            String loraData = recibirLoRa();
+            if(loraData != "")
+            {
+               publicarNube(loraData,nivel2,temperatura2,estado2);
+               estado = 4;
+            }
+            
+            if (Temporizador(millisAnteriores, timeOut))
+            {
+              Serial.println("No llego nada nodo 2");
+              publicarNubeAlarma(estado2);
+              estado = 4;
+            }
+        }
+        break;
+
+        case 4:
+        {
+          Serial.println("Enviar al nodo 3");
+          enviarLoRa("3");
+          estado = 5;
+         }
+        break;
+        
+        case 5:
+        {
+            String loraData = recibirLoRa();
+            if(loraData != "")
+            {
+               publicarNube(loraData,nivel3,temperatura3,estado3);
+               estado = 6;
+            }
+             
+             if (Temporizador(millisAnteriores, timeOut))
+             {
+               publicarNubeAlarma(estado3);
+               Serial.println("No llego nada nodo 3");
+               estado = 6;
+             }
+        }
+        break;
+
+        case 6:
+        {
+             if (Temporizador(millisAnteriores, sleepTime))
+             {
+               Serial.println("Termino de dormir");
+               estado = 0;
+             }    
+         }
+        break;
+        
+      }
+}
+
+boolean publicarNube(String loraData, Adafruit_MQTT_Publish nivel,Adafruit_MQTT_Publish temperatura,Adafruit_MQTT_Publish estado)
+{
+  int i1 = loraData.indexOf(',');
+  int i2 = loraData.indexOf(',', i1+1);
+    
+  int node = loraData.substring(0, i1).toInt();      
+  float level = loraData.substring(i1 + 1, i2).toFloat(); 
+  float temp = loraData.substring(i2 + 1).toFloat();
+  
+  Serial.println("Nodo: " + String (node));
+  Serial.println("Level: " + String (level));
+  Serial.println("Temp: " + String (temp));
+
+  if (!nivel.publish(level)) {
+    Serial.println("Failed level: " + String(node));
+  } else {
+    Serial.println("level " + String(node) + " OK!");
+  }
+  if (!temperatura.publish(temp)) {
+    Serial.println("Failed temp: " + String(node));
+  } else {
+    Serial.println("temp " + String(node) + " OK!");
+  }
+  if (!estado.publish(node)) {
+    Serial.println("Failed temp: " + String(node));
+  } else {
+    Serial.println("Nodo " + String(node) + " OK!");
+  }
+}
+
+
+boolean Temporizador(unsigned long &millisAnterior, unsigned long tiempoEspera) 
+{
+  if (millisActuales - millisAnterior >= tiempoEspera) 
+  {
+    millisAnterior += tiempoEspera;
+    return true;
+  }
+  return false;
+}
+
+void enviarLoRa(String Payload)
+{
+  LoRa.beginPacket();
+  LoRa.print(Payload);
+  LoRa.endPacket();
+}
+
+String recibirLoRa()
+{
+  int packetSize = LoRa.parsePacket();
+  String LoRaData;
+  
+  if (packetSize) 
+  {
+    while (LoRa.available()) 
+    {
+      LoRaData = LoRa.readString();  
+    }
+  }
+  return LoRaData;
+}
+
+void MQTT_connect() {
+  int8_t ret;
+
+
+  if (mqtt.connected()) {
+    return;
+  }
+
+  Serial.print("Connecting to MQTT... ");
+
+  uint8_t retries = 3;
+  while ((ret = mqtt.connect()) != 0) { 
+       Serial.println(mqtt.connectErrorString(ret));
+       Serial.println("Retrying MQTT connection in 5 seconds...");
+       mqtt.disconnect();
+       delay(5000); 
+       retries--;
+       if (retries == 0) {
+         while (1);
+       }
+  }
+  Serial.println("MQTT Connected!");
+}
+
+boolean publicarNubeAlarma(Adafruit_MQTT_Publish estado){
+
+  int node = 0;
+
+  if (!estado.publish(node)) {
+    Serial.println("Failed temp: " + String(node));
+  } else {
+    Serial.println("Nodo " + String(node) + " OK!");
+  }
+
+}
